@@ -16,9 +16,9 @@
 
 #define CMD_CHAR_MAX 1024
 
-
 #define PARALLEL_TOKEN "&"
 #define REDIRECT_TOKEN ">"
+#define SEPERATOR_CHAR ' '
 
 /**
  *
@@ -31,7 +31,7 @@
  *      [ ] cd - change the directory with chdir()
  *      [ ] path - overwrite the search directory by the specified args
  * [ ] Output Redirection - Move the ouput into a specified file, if it doesn't exist then create it
- * [ ] Parallel Execution - Move the cmd into the background
+ * [p] Parallel Execution - Move the cmd into the background
  * [ ] Error handling - Write "An error has occurred\n" into stdout
  */
 
@@ -40,16 +40,6 @@ void mode_batch(const char* batch_filepath);
 
 void handle_line(char* cmdline_buffer);
 void handle_cmd(char** cmd_tokens);
-
-typedef struct {
-    size_t num_args;
-
-    char* cmd_token;
-    char** arg_tokens;
-
-    /* bool has_redirect; */
-    /* char* redirect_filepath; */
-} cmd_tokens_t;
 
 int main(int argc, char* argv[]) {
     if (argc == 1) {
@@ -79,19 +69,43 @@ void mode_batch(const char* batch_filepath) {
 
 void handle_line(char* cmdline_buffer) {
 
-    char** tokens = malloc(0);
-    size_t num_tokens = 0;
+    char** tokens = NULL;
     char* current_token;
+    size_t num_tokens = 1, token_idx = 0;
 
-    // Remove new line symbol
-    cmdline_buffer[strcspn(cmdline_buffer, "\n")] = 0;
-
-    while ((current_token = strsep(&cmdline_buffer, " ")) != NULL) {
-        ++num_tokens;
-        size_t token_len = strlen(current_token);
-        tokens = realloc(tokens, sizeof(void*));
-        tokens[num_tokens - 1] = current_token; 
+    cmdline_buffer[strcspn(cmdline_buffer, "\n")] = 0; //Remove newline char
+    for (size_t i = 0; i < strlen(cmdline_buffer) - 1; ++i) { 
+        if (cmdline_buffer[i] == SEPERATOR_CHAR) { ++num_tokens; }
     }
-    cmdline_buffer = NULL;
+    tokens = malloc(num_tokens * sizeof(char*));
+    while ((current_token = strsep(&cmdline_buffer, " ")) != NULL) {
+        tokens[token_idx] = current_token; 
+        ++token_idx;
+    }
+    free(cmdline_buffer);
+
+    cmd_t* parallel_cmds = NULL;
+    size_t num_cmds = 1;
+    size_t cmd_idx = 0;
+    for (size_t i = 0; i < num_tokens; ++i) { 
+        if (strcmp(tokens[i], PARALLEL_TOKEN) == 0) { ++num_cmds; }
+    }
+    parallel_cmds = malloc(num_cmds * sizeof(cmd_t));
+
+    size_t cmd_start_idx = 0;
+    for (size_t i = 0; i < num_tokens; ++i) {
+        // Trigger cmd seperation on parallel token or last token in list 
+        // This will handle strings without parallel tokens and the last parallel
+        // command that doesn't feature the parallel token to trigger its seperation
+        if (strcmp(tokens[i], PARALLEL_TOKEN) == 0 || i == num_tokens - 1) { 
+            parallel_cmds[cmd_idx] = (cmd_t){ malloc((i - cmd_start_idx + 1) * sizeof(char*)), i - cmd_start_idx + 1 };
+            for (size_t j = 0; j < parallel_cmds[cmd_idx].argc; ++j) {
+                parallel_cmds[cmd_idx].argv[j] = tokens[cmd_start_idx + j];
+            }
+
+            cmd_start_idx = i + 1;
+            ++cmd_idx;
+        }
+    }
 
 }
