@@ -14,11 +14,16 @@
 #define STRINGIFY(x) STRINGIFY2(x)
 #define STRINGIFY2(x) #x
 
+#define DEFAULT_PATH "/bin/"
 #define CMD_CHAR_MAX 1024
 
 #define PARALLEL_TOKEN "&"
 #define REDIRECT_TOKEN ">"
 #define SEPERATOR_CHAR ' '
+
+#define EXIT_CMD "exit"
+#define CD_CMD "cd"
+#define PATH_CMD "path"
 
 /**
  *
@@ -26,22 +31,34 @@
  *
  * [p] Batch Mode Input - Specify a file as an arg and just execute the file
  * [x] Interactive Mode Input - Enter while loop waiting for execution
- * [ ] Built in commands
- *      [ ] exit - call exit() 
- *      [ ] cd - change the directory with chdir()
- *      [ ] path - overwrite the search directory by the specified args
+ * [x] Built in commands
+ *      [p] exit - call exit() 
+ *      [x] cd - change the directory with chdir()
+ *      [x] path - overwrite the search directory by the specified args
  * [ ] Output Redirection - Move the ouput into a specified file, if it doesn't exist then create it
- * [p] Parallel Execution - Move the cmd into the background
+ * [x] Parallel Execution - Move the cmd into the background
  * [ ] Error handling - Write "An error has occurred\n" into stdout
  */
+
+typedef struct {
+    char** argv;
+    size_t argc;
+} cmd_t;
 
 void mode_interactive(void);
 void mode_batch(const char* batch_filepath);
 
 void handle_line(char* cmdline_buffer);
-void handle_cmd(char** cmd_tokens);
+void handle_excmd(cmd_t* cmd); // External commands i.e. programs
+void handle_incmd(cmd_t* cmd); // Internal commands
+
+// GLOBAL VARIABLES - NO TOUCHY
+char* search_path;
 
 int main(int argc, char* argv[]) {
+    search_path = malloc((strlen(DEFAULT_PATH) + 1) * sizeof(char));
+    strlcpy(search_path, DEFAULT_PATH, strlen(DEFAULT_PATH) + 1);
+
     if (argc == 1) {
         mode_interactive();
     } else if (argc == 2) {
@@ -52,11 +69,17 @@ int main(int argc, char* argv[]) {
     }
 }
 
-void mode_interactive(void) {
+void mode_interactive() {
     char cmd_buffer[CMD_CHAR_MAX + 1];
 
     while(True) {
-        fputs("witsh >> ", stdout);
+
+
+        char cwd[128];
+        getcwd(cwd, 128);
+        fputs("witsh: ", stdout);
+        fputs(cwd, stdout);
+        fputs(" >> ", stdout);
         fgets(cmd_buffer, CMD_CHAR_MAX + 1, stdin);
         handle_line(cmd_buffer);
         cmd_buffer[0] = 0; // clear the command buffer
@@ -101,6 +124,7 @@ void handle_line(char* cmdline_buffer) {
             parallel_cmds[cmd_idx] = (cmd_t){ malloc((i - cmd_start_idx + 1) * sizeof(char*)), i - cmd_start_idx + 1 };
             for (size_t j = 0; j < parallel_cmds[cmd_idx].argc; ++j) {
                 parallel_cmds[cmd_idx].argv[j] = tokens[cmd_start_idx + j];
+                tokens[cmd_start_idx + j] = NULL;
             }
 
             cmd_start_idx = i + 1;
@@ -108,4 +132,70 @@ void handle_line(char* cmdline_buffer) {
         }
     }
 
+    free(tokens);
+
+    pid_t* child_pids = malloc(num_cmds * sizeof(pid_t));
+    for (size_t i = 0; i < num_cmds; ++i) {
+        if (strcmp(parallel_cmds[i].argv[0], EXIT_CMD) != 0 && 
+            strcmp(parallel_cmds[i].argv[0], CD_CMD) != 0 && 
+            strcmp(parallel_cmds[i].argv[0], PATH_CMD) != 0) {
+
+            pid_t fork_result = fork();
+
+            if (fork_result == 0) {
+                handle_excmd(&parallel_cmds[i]);
+                exit(EXIT_SUCCESS);
+                break; // don't execute the rest of the loop iterations if it is a child
+            } else {
+                child_pids[i] = fork_result;
+            }
+        } else {
+            handle_incmd(&parallel_cmds[i]);
+        }
+    }
+
+    wait(NULL);
+    free(parallel_cmds);
+    free(child_pids);
+}
+
+
+void handle_excmd(cmd_t* cmd) {
+    
+}
+
+void handle_incmd(cmd_t* cmd) {
+    if (strcmp(cmd->argv[0], EXIT_CMD) == 0) {
+        exit(EXIT_SUCCESS);
+    }
+
+    if (strcmp(cmd->argv[0], CD_CMD) == 0) {
+        if (cmd->argc != 2) {
+            // Error handling 
+            return;
+        }
+
+        chdir(cmd->argv[1]);
+        return;
+    }
+    
+    if (strcmp(cmd->argv[0], PATH_CMD) == 0) {
+        free(search_path); // Clean up old memory
+
+        size_t new_path_length = 0;
+        for (size_t i = 1; i < cmd->argc; ++i) {
+            new_path_length += strlen(cmd->argv[i]) + 1;
+        }
+
+        search_path = malloc(new_path_length * sizeof(char));
+        strlcpy(search_path, cmd->argv[1], new_path_length);
+        strlcat(search_path, ":", new_path_length);
+
+        for(size_t i = 2; i < cmd->argc; ++i) {
+            strlcat(search_path, cmd->argv[i], new_path_length);
+            strlcat(search_path, ":", new_path_length);
+        }
+
+        return;
+    }
 }
