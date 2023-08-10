@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/errno.h>
 
 #include "util.h"
 
@@ -15,6 +16,8 @@
 #define STRINGIFY2(x) #x
 
 #define DEFAULT_PATH "/bin/"
+#define PATH_SEPERATOR ":"
+
 #define CMD_CHAR_MAX 1024
 
 #define PARALLEL_TOKEN "&"
@@ -32,12 +35,13 @@
  * [p] Batch Mode Input - Specify a file as an arg and just execute the file
  * [x] Interactive Mode Input - Enter while loop waiting for execution
  * [x] Built in commands
- *      [p] exit - call exit() 
+ *      [x] exit - call exit() 
  *      [x] cd - change the directory with chdir()
  *      [x] path - overwrite the search directory by the specified args
- * [ ] Output Redirection - Move the ouput into a specified file, if it doesn't exist then create it
+ * [x] External commands
+ * [x] Output Redirection - Move the ouput into a specified file, if it doesn't exist then create it
  * [x] Parallel Execution - Move the cmd into the background
- * [ ] Error handling - Write "An error has occurred\n" into stdout
+ * [p] Error handling - Write "An error has occurred\n" into stderr
  */
 
 typedef struct {
@@ -64,8 +68,7 @@ int main(int argc, char* argv[]) {
     } else if (argc == 2) {
         mode_batch(argv[1]);
     } else {
-        const char* arg_error = "Incorrect arguments provided for witsh.\n";
-        write(STDERR_FILENO, arg_error, strlen(arg_error));
+        fputs("An error has occured\n", stderr);
     }
 }
 
@@ -162,6 +165,32 @@ void handle_line(char* cmdline_buffer) {
 
 void handle_excmd(cmd_t* cmd) {
     
+    // To handle redirects, change stdout to the relevant file to output to that
+    // file and then remove the last two tokens from cmd->argv
+    FILE* old_stdout = stdout;
+    if (strcmp(cmd->argv[cmd->argc - 2], REDIRECT_TOKEN) == 0) {
+        if (freopen(cmd->argv[cmd->argc - 1], "w", stdout) == NULL) {
+            fputs("An error has occured\n", stderr);
+        }
+
+        // strip argv of redirects
+        char** old_argv = cmd->argv;
+        cmd->argc -= 2;
+        cmd->argv = malloc(cmd->argc * sizeof(char*));
+        
+        for (size_t i = 0; i < cmd->argc; ++i) {
+            cmd->argv[i] = old_argv[i];
+        }
+
+        free(old_argv);
+    }
+
+    if (execvP(cmd->argv[0], search_path, cmd->argv) == -1) {
+        fputs("An error has occured\n", stderr);
+    }
+
+    fclose(stdout);
+    stdout = old_stdout;
 }
 
 void handle_incmd(cmd_t* cmd) {
@@ -171,11 +200,13 @@ void handle_incmd(cmd_t* cmd) {
 
     if (strcmp(cmd->argv[0], CD_CMD) == 0) {
         if (cmd->argc != 2) {
-            // Error handling 
+            fputs("An error has occured\n", stderr);
             return;
         }
 
-        chdir(cmd->argv[1]);
+        if (chdir(cmd->argv[1]) == -1) {
+            fputs("An error has occured\n", stderr);
+        }
         return;
     }
     
@@ -189,11 +220,11 @@ void handle_incmd(cmd_t* cmd) {
 
         search_path = malloc(new_path_length * sizeof(char));
         strlcpy(search_path, cmd->argv[1], new_path_length);
-        strlcat(search_path, ":", new_path_length);
+        strlcat(search_path, PATH_SEPERATOR, new_path_length);
 
         for(size_t i = 2; i < cmd->argc; ++i) {
             strlcat(search_path, cmd->argv[i], new_path_length);
-            strlcat(search_path, ":", new_path_length);
+            strlcat(search_path, PATH_SEPERATOR, new_path_length);
         }
 
         return;
