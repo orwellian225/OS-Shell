@@ -6,17 +6,8 @@
 #include <string.h>
 #include <sys/errno.h>
 
-#include "util.h"
-
-#define True 1
-#define False 0
-
-// https://stackoverflow.com/questions/3301294/scanf-field-lengths-using-a-variable-macro-c-c
-#define STRINGIFY(x) STRINGIFY2(x)
-#define STRINGIFY2(x) #x
-
 #define DEFAULT_PATH "/bin/"
-#define PATH_SEPERATOR ":"
+#define DEFAULT_PATH_COUNT 1
 
 #define CMD_CHAR_MAX 1024
 
@@ -28,11 +19,15 @@
 #define CD_CMD "cd"
 #define PATH_CMD "path"
 
+#define bool uint8_t
+#define true 1
+#define false 0
+
 /**
  *
  * Tasks
  *
- * [p] Batch Mode Input - Specify a file as an arg and just execute the file
+ * [x] Batch Mode Input - Specify a file as an arg and just execute the file
  * [x] Interactive Mode Input - Enter while loop waiting for execution
  * [x] Built in commands
  *      [x] exit - call exit() 
@@ -52,45 +47,58 @@ typedef struct {
 void mode_interactive(void);
 void mode_batch(const char* batch_filepath);
 
+bool is_incmd(cmd_t* cmd);
+
 void handle_line(char* cmdline_buffer);
 void handle_excmd(cmd_t* cmd); // External commands i.e. programs
 void handle_incmd(cmd_t* cmd); // Internal commands
 
 // GLOBAL VARIABLES - NO TOUCHY
-char* search_path;
+char** search_paths;
+size_t num_search_paths;
 
 int main(int argc, char* argv[]) {
-    search_path = malloc((strlen(DEFAULT_PATH) + 1) * sizeof(char));
-    strlcpy(search_path, DEFAULT_PATH, strlen(DEFAULT_PATH) + 1);
+    search_paths = malloc(1 * sizeof(char*)); // Only one initial path entry
+    search_paths[0] = DEFAULT_PATH;
 
     if (argc == 1) {
         mode_interactive();
     } else if (argc == 2) {
         mode_batch(argv[1]);
     } else {
-        fputs("An error has occured\n", stderr);
+        fputs("An error has occurred\n", stderr);
+        exit(1);
     }
 }
 
 void mode_interactive() {
     char cmd_buffer[CMD_CHAR_MAX + 1];
 
-    while(True) {
-
-
+    while(true) {
         char cwd[128];
         getcwd(cwd, 128);
-        fputs("witsh: ", stdout);
-        fputs(cwd, stdout);
-        fputs(" >> ", stdout);
+
+        fputs("witsh: ", stdout); fputs(cwd, stdout); fputs(" >> ", stdout);
         fgets(cmd_buffer, CMD_CHAR_MAX + 1, stdin);
+        
         handle_line(cmd_buffer);
         cmd_buffer[0] = 0; // clear the command buffer
     }
 }
 
 void mode_batch(const char* batch_filepath) {
-    printf("%s\n", batch_filepath);
+    FILE* batch_file = fopen(batch_filepath, "r");
+    char cmd_buffer[CMD_CHAR_MAX + 1];
+
+    if (batch_filepath == NULL) {
+        fputs("An error has occurred\n", stderr);
+    }
+
+    while (fgets(cmd_buffer, CMD_CHAR_MAX + 1, batch_file) != NULL) {
+        handle_line(cmd_buffer);
+    }
+
+    fclose(batch_file);
 }
 
 void handle_line(char* cmdline_buffer) {
@@ -139,10 +147,7 @@ void handle_line(char* cmdline_buffer) {
 
     pid_t* child_pids = malloc(num_cmds * sizeof(pid_t));
     for (size_t i = 0; i < num_cmds; ++i) {
-        if (strcmp(parallel_cmds[i].argv[0], EXIT_CMD) != 0 && 
-            strcmp(parallel_cmds[i].argv[0], CD_CMD) != 0 && 
-            strcmp(parallel_cmds[i].argv[0], PATH_CMD) != 0) {
-
+        if (!is_incmd(&parallel_cmds[i])) {
             pid_t fork_result = fork();
 
             if (fork_result == 0) {
@@ -166,31 +171,55 @@ void handle_line(char* cmdline_buffer) {
 void handle_excmd(cmd_t* cmd) {
     
     // To handle redirects, change stdout to the relevant file to output to that
-    // file and then remove the last two tokens from cmd->argv
-    FILE* old_stdout = stdout;
-    if (strcmp(cmd->argv[cmd->argc - 2], REDIRECT_TOKEN) == 0) {
-        if (freopen(cmd->argv[cmd->argc - 1], "w", stdout) == NULL) {
-            fputs("An error has occured\n", stderr);
-        }
+    // file and then remove the two tokens from cmd->argv and any that occur afterwards
+    
+    int saved_stdout = dup(fileno(stdout));
+    for (size_t i = 0; i < cmd->argc; ++i) {
+        if (strcmp(cmd->argv[i], REDIRECT_TOKEN) == 0) {
+            FILE* output_file = fopen(cmd->argv[i + 1], "w"); 
+            if (output_file == NULL) {
+                fputs("An error has occurred\n", stderr);
+                return;
+            }
+            dup2(fileno(output_file), fileno(stdout));
 
-        // strip argv of redirects
-        char** old_argv = cmd->argv;
-        cmd->argc -= 2;
-        cmd->argv = malloc(cmd->argc * sizeof(char*));
-        
-        for (size_t i = 0; i < cmd->argc; ++i) {
-            cmd->argv[i] = old_argv[i];
-        }
+            cmd->argc = i;
+            char** new_argv = (char**)malloc(cmd->argc * sizeof(char*));
+            for (size_t j = 0; j < cmd->argc; ++j) {
+                new_argv[j] = cmd->argv[j];
+            }
+            free(cmd->argv);
+            cmd->argv = new_argv;
 
-        free(old_argv);
+            break;
+        }
     }
 
-    if (execvP(cmd->argv[0], search_path, cmd->argv) == -1) {
-        fputs("An error has occured\n", stderr);
+    /* if (execvP(cmd->argv[0], search_paths, cmd->argv) == -1) { */
+    /*     fputs("An error has occurred\n", stderr); */
+    /* } */
+
+    bool was_found_flag = false;
+    for (size_t i = 0; i < num_search_paths; ++i) {
+        size_t bin_filepath_length = strlen(search_paths[i]) + strlen(cmd->argv[0]);
+        char* bin_filepath = malloc(bin_filepath_length * sizeof(char));
+        strlcpy(bin_filepath, search_paths[i], bin_filepath_length);
+        strlcat(bin_filepath, cmd->argv[0], bin_filepath_length);
+        fputs(bin_filepath, stdout); fputs("\n", stdout);
+        if (access(bin_filepath, X_OK) == 0) {
+            execv(bin_filepath, cmd->argv);
+            was_found_flag = true;
+            break;
+        }
     }
 
-    fclose(stdout);
-    stdout = old_stdout;
+    if (!was_found_flag) {
+        fputs("An error has occurred\n", stderr);
+    }
+
+    dup2(saved_stdout, fileno(stdout));
+    close(saved_stdout);
+
 }
 
 void handle_incmd(cmd_t* cmd) {
@@ -200,33 +229,36 @@ void handle_incmd(cmd_t* cmd) {
 
     if (strcmp(cmd->argv[0], CD_CMD) == 0) {
         if (cmd->argc != 2) {
-            fputs("An error has occured\n", stderr);
+            fputs("An error has occurred\n", stderr);
             return;
         }
 
         if (chdir(cmd->argv[1]) == -1) {
-            fputs("An error has occured\n", stderr);
+            fputs("An error has occurred\n", stderr);
         }
         return;
     }
     
     if (strcmp(cmd->argv[0], PATH_CMD) == 0) {
-        free(search_path); // Clean up old memory
-
-        size_t new_path_length = 0;
-        for (size_t i = 1; i < cmd->argc; ++i) {
-            new_path_length += strlen(cmd->argv[i]) + 1;
+        // Clean up old memory
+        for (size_t i = 0; i < num_search_paths; ++i) {
+            free(search_paths[i]);
         }
+        free(search_paths); 
 
-        search_path = malloc(new_path_length * sizeof(char));
-        strlcpy(search_path, cmd->argv[1], new_path_length);
-        strlcat(search_path, PATH_SEPERATOR, new_path_length);
-
-        for(size_t i = 2; i < cmd->argc; ++i) {
-            strlcat(search_path, cmd->argv[i], new_path_length);
-            strlcat(search_path, PATH_SEPERATOR, new_path_length);
+        
+        num_search_paths = cmd->argc - 1;
+        search_paths = malloc(num_search_paths * sizeof(char*));
+        for(size_t i = 1; i < cmd->argc; ++i) {
+            search_paths[i - 1] = cmd->argv[i];
         }
 
         return;
     }
+}
+
+bool is_incmd(cmd_t* cmd) {
+    return strcmp(cmd->argv[0], EXIT_CMD) == 0 || 
+            strcmp(cmd->argv[0], CD_CMD) == 0 || 
+            strcmp(cmd->argv[0], PATH_CMD) == 0;
 }
