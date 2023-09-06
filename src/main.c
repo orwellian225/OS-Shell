@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/errno.h>
+#include <ctype.h>
 
 #define DEFAULT_PATH "/bin/"
 #define DEFAULT_PATH_COUNT 1
@@ -48,6 +49,7 @@ void mode_interactive(void);
 void mode_batch(const char* batch_filepath);
 
 bool is_incmd(cmd_t* cmd);
+void strip_extra_spaces(char* string);
 
 void handle_line(char* cmdline_buffer);
 void handle_excmd(cmd_t* cmd); // External commands i.e. programs
@@ -60,6 +62,7 @@ size_t num_search_paths;
 int main(int argc, char* argv[]) {
     search_paths = malloc(1 * sizeof(char*)); // Only one initial path entry
     search_paths[0] = DEFAULT_PATH;
+    num_search_paths = DEFAULT_PATH_COUNT;
 
     if (argc == 1) {
         mode_interactive();
@@ -108,6 +111,7 @@ void handle_line(char* cmdline_buffer) {
     size_t num_tokens = 1, token_idx = 0;
 
     cmdline_buffer[strcspn(cmdline_buffer, "\n")] = 0; //Remove newline char
+    strip_extra_spaces(cmdline_buffer);
     for (size_t i = 0; i < strlen(cmdline_buffer) - 1; ++i) { 
         if (cmdline_buffer[i] == SEPERATOR_CHAR) { ++num_tokens; }
     }
@@ -195,17 +199,14 @@ void handle_excmd(cmd_t* cmd) {
         }
     }
 
-    /* if (execvP(cmd->argv[0], search_paths, cmd->argv) == -1) { */
-    /*     fputs("An error has occurred\n", stderr); */
-    /* } */
-
     bool was_found_flag = false;
     for (size_t i = 0; i < num_search_paths; ++i) {
-        size_t bin_filepath_length = strlen(search_paths[i]) + strlen(cmd->argv[0]);
+
+        size_t bin_filepath_length = strlen(search_paths[i]) + strlen(cmd->argv[0]) + 1;
         char* bin_filepath = malloc(bin_filepath_length * sizeof(char));
         strlcpy(bin_filepath, search_paths[i], bin_filepath_length);
         strlcat(bin_filepath, cmd->argv[0], bin_filepath_length);
-        fputs(bin_filepath, stdout); fputs("\n", stdout);
+
         if (access(bin_filepath, X_OK) == 0) {
             execv(bin_filepath, cmd->argv);
             was_found_flag = true;
@@ -261,4 +262,17 @@ bool is_incmd(cmd_t* cmd) {
     return strcmp(cmd->argv[0], EXIT_CMD) == 0 || 
             strcmp(cmd->argv[0], CD_CMD) == 0 || 
             strcmp(cmd->argv[0], PATH_CMD) == 0;
+} 
+
+// https://stackoverflow.com/questions/17770202/remove-extra-whitespace-from-a-string-in-c
+void strip_extra_spaces(char* string) {
+  size_t i, x;
+
+  for(i=x=0; string[i]; ++i) {
+    if(string[i] != SEPERATOR_CHAR || (i > 0 && string[i-1] != SEPERATOR_CHAR)) {
+      string[x++] = string[i];
+    }
+  }
+
+  string[x] = '\0';
 }
