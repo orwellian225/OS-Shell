@@ -20,6 +20,8 @@
 #define CD_CMD "cd"
 #define PATH_CMD "path"
 
+#define PRINT_ERROR fputs("An error has occurred\n", stderr);
+
 #define bool uint8_t
 #define true 1
 #define false 0
@@ -69,7 +71,7 @@ int main(int argc, char* argv[]) {
     } else if (argc == 2) {
         mode_batch(argv[1]);
     } else {
-        fputs("An error has occurred\n", stderr);
+        PRINT_ERROR;
         exit(1);
     }
 }
@@ -94,7 +96,7 @@ void mode_batch(const char* batch_filepath) {
     char cmd_buffer[CMD_CHAR_MAX + 1];
 
     if (batch_filepath == NULL) {
-        fputs("An error has occurred\n", stderr);
+        PRINT_ERROR;
     }
 
     while (fgets(cmd_buffer, CMD_CHAR_MAX + 1, batch_file) != NULL) {
@@ -121,6 +123,14 @@ void handle_line(char* cmdline_buffer) {
         ++token_idx;
     }
     free(cmdline_buffer);
+
+    /** Error Handling - Parallel Commands
+     *
+     *  - ERORR CAUSE - EXPECTED OUTPUT
+     *  - Only Parallel Command token found - no error - output 0
+     *  - Parallel Token at end of single command - Just ignore last token
+     *  - No whitespace between parallel token and command - split into seperate commands 
+     */
 
     cmd_t* parallel_cmds = NULL;
     size_t num_cmds = 1;
@@ -156,8 +166,7 @@ void handle_line(char* cmdline_buffer) {
 
             if (fork_result == 0) {
                 handle_excmd(&parallel_cmds[i]);
-                exit(EXIT_SUCCESS);
-                break; // don't execute the rest of the loop iterations if it is a child
+                exit(EXIT_SUCCESS); // don't execute the rest of the loop iterations if it is a child
             } else {
                 child_pids[i] = fork_result;
             }
@@ -177,12 +186,21 @@ void handle_excmd(cmd_t* cmd) {
     // To handle redirects, change stdout to the relevant file to output to that
     // file and then remove the two tokens from cmd->argv and any that occur afterwards
     
+    /** Error Handling - Redirection
+     *
+     *  - ERORR CAUSE - EXPECTED OUTPUT
+     *  - Multiple Output files - stderr write "An error has occurred"
+     *  - Multiple redirect tokens - stderr write "An error has occurred"
+     *  - No command before redirect token - stderr write "An error has occurred"
+     *
+     */
+
     int saved_stdout = dup(fileno(stdout));
     for (size_t i = 0; i < cmd->argc; ++i) {
         if (strcmp(cmd->argv[i], REDIRECT_TOKEN) == 0) {
             FILE* output_file = fopen(cmd->argv[i + 1], "w"); 
             if (output_file == NULL) {
-                fputs("An error has occurred\n", stderr);
+                PRINT_ERROR;
                 return;
             }
             dup2(fileno(output_file), fileno(stdout));
@@ -215,7 +233,7 @@ void handle_excmd(cmd_t* cmd) {
     }
 
     if (!was_found_flag) {
-        fputs("An error has occurred\n", stderr);
+        PRINT_ERROR;
     }
 
     dup2(saved_stdout, fileno(stdout));
@@ -225,17 +243,22 @@ void handle_excmd(cmd_t* cmd) {
 
 void handle_incmd(cmd_t* cmd) {
     if (strcmp(cmd->argv[0], EXIT_CMD) == 0) {
+        if (cmd->argc > 1) {
+            PRINT_ERROR;
+            return;
+        }
+
         exit(EXIT_SUCCESS);
     }
 
     if (strcmp(cmd->argv[0], CD_CMD) == 0) {
         if (cmd->argc != 2) {
-            fputs("An error has occurred\n", stderr);
+            PRINT_ERROR;
             return;
         }
 
         if (chdir(cmd->argv[1]) == -1) {
-            fputs("An error has occurred\n", stderr);
+            PRINT_ERROR;
         }
         return;
     }
@@ -246,6 +269,14 @@ void handle_incmd(cmd_t* cmd) {
             free(search_paths[i]);
         }
         free(search_paths); 
+
+        // If no path is specified, then default to bin
+        if (cmd->argc == 1) {
+            num_search_paths = 1;
+            search_paths = malloc(num_search_paths * sizeof(char*));
+            search_paths[0] = "/bin/";
+            return;
+        }
 
         
         num_search_paths = cmd->argc - 1;
