@@ -12,8 +12,8 @@
 
 #define CMD_CHAR_MAX 1024
 
-#define PARALLEL_TOKEN "&"
-#define REDIRECT_TOKEN ">"
+#define PARALLEL_TOKEN '&'
+#define REDIRECT_TOKEN '>'
 #define SEPERATOR_CHAR ' '
 
 #define EXIT_CMD "exit"
@@ -45,6 +45,7 @@
 typedef struct {
     char** argv;
     size_t argc;
+    char* redirect_file;
 } cmd_t;
 
 void mode_interactive(void);
@@ -85,6 +86,7 @@ void mode_interactive() {
 
         fputs("witsh: ", stdout); fputs(cwd, stdout); fputs(" >> ", stdout);
         fgets(cmd_buffer, CMD_CHAR_MAX + 1, stdin);
+
         
         handle_line(cmd_buffer);
         cmd_buffer[0] = 0; // clear the command buffer
@@ -92,11 +94,20 @@ void mode_interactive() {
 }
 
 void mode_batch(const char* batch_filepath) {
+
+    //Specified batch file does not exist
+    if (access(batch_filepath, F_OK) != 0) {
+        PRINT_ERROR;
+        exit(EXIT_FAILURE);
+    }
+
     FILE* batch_file = fopen(batch_filepath, "r");
     char cmd_buffer[CMD_CHAR_MAX + 1];
 
-    if (batch_filepath == NULL) {
+    // Misc error handling
+    if (batch_filepath == NULL ) {
         PRINT_ERROR;
+        exit(EXIT_FAILURE);
     }
 
     while (fgets(cmd_buffer, CMD_CHAR_MAX + 1, batch_file) != NULL) {
@@ -108,59 +119,104 @@ void mode_batch(const char* batch_filepath) {
 
 void handle_line(char* cmdline_buffer) {
 
-    char** tokens = NULL;
-    char* current_token;
-    size_t num_tokens = 1, token_idx = 0;
+    // EOF handling
+    for(size_t i = 0; i < strlen(cmdline_buffer) - 1; ++i) {
+        if (cmdline_buffer[i] == EOF) {
+            fputs("\n", stdout); // to avoid weird formatting
+            exit(EXIT_SUCCESS);
+        }
+    }
 
+    // Command Line preprocessing
     cmdline_buffer[strcspn(cmdline_buffer, "\n")] = 0; //Remove newline char
     strip_extra_spaces(cmdline_buffer);
-    for (size_t i = 0; i < strlen(cmdline_buffer) - 1; ++i) { 
-        if (cmdline_buffer[i] == SEPERATOR_CHAR) { ++num_tokens; }
+
+    if (strlen(cmdline_buffer) == 0) { return; } // Empty string handling
+    if (cmdline_buffer[0] == PARALLEL_TOKEN && strlen(cmdline_buffer) == 1) {
+        return;
+    } // If only the Parallel Token is input, then just exit without an error
+    if (cmdline_buffer[strlen(cmdline_buffer) - 1] == '&') {
+        cmdline_buffer[strlen(cmdline_buffer) - 1] = '\0';
     }
-    tokens = malloc(num_tokens * sizeof(char*));
-    while ((current_token = strsep(&cmdline_buffer, " ")) != NULL) {
-        tokens[token_idx] = current_token; 
-        ++token_idx;
+
+    // Parallel Command Split
+    char** parallel_cmdlines = NULL;
+    char* current_cmd;
+    size_t num_parallel_cmds = 1, parallel_cmd_idx = 0;
+    
+    for (size_t i = 0; i < strlen(cmdline_buffer) - 1; ++i) {
+        if (cmdline_buffer[i] == PARALLEL_TOKEN) { ++num_parallel_cmds; }
     }
-    free(cmdline_buffer);
+
+    parallel_cmdlines = malloc(num_parallel_cmds * sizeof(char*));
+    
+    while ((current_cmd = strsep(&cmdline_buffer, "&")) != NULL) {
+        parallel_cmdlines[parallel_cmd_idx] = current_cmd;
+        ++parallel_cmd_idx;
+    }
+
+    // Command token split
+    cmd_t* parallel_cmds = malloc(num_parallel_cmds * sizeof(cmd_t));
+    for (size_t i = 0; i < num_parallel_cmds; ++i) {
+        char** tokens = NULL;
+        char* current_cmdline;
+        char* current_token;
+        char* redirect_file = NULL;
+        size_t num_tokens = 1, token_idx = 0;
+
+        strip_extra_spaces(parallel_cmdlines[i]);
+
+        current_cmdline = parallel_cmdlines[i];
+        if (strchr(parallel_cmdlines[i], REDIRECT_TOKEN) != NULL) {
+            current_cmdline = strsep(&parallel_cmdlines[i], ">");
+            redirect_file = strsep(&parallel_cmdlines[i], ">");
+
+            // If no command is specified before the redirect
+            if (strlen(current_cmdline) == 0) {
+                PRINT_ERROR;
+                return;
+            }
+
+            strip_extra_spaces(current_cmdline);
+            strip_extra_spaces(redirect_file);
+
+
+            // If anymore redirect tokens are found then throw an error
+            // Or if there are more than one specified output files
+            if (strsep(&parallel_cmdlines[i], ">") != NULL || strchr(redirect_file, SEPERATOR_CHAR) != NULL) {
+                PRINT_ERROR;
+                return;
+            }
+
+        }
+
+        for (size_t j = 0; j < strlen(current_cmdline) - 1; ++j) { 
+            if (current_cmdline[j] == SEPERATOR_CHAR) { ++num_tokens; }
+        }
+
+        tokens = malloc(num_tokens * sizeof(char*));
+        while ((current_token = strsep(&current_cmdline, " ")) != NULL) {
+            tokens[token_idx] = current_token; 
+            ++token_idx;
+        }
+
+        parallel_cmds[i].argv = tokens;
+        parallel_cmds[i].argc = num_tokens;
+        parallel_cmds[i].redirect_file = redirect_file;
+
+    }
+    free(parallel_cmdlines);
 
     /** Error Handling - Parallel Commands
      *
      *  - ERORR CAUSE - EXPECTED OUTPUT
-     *  - Only Parallel Command token found - no error - output 0
+     *  - Only Parallel Command token found - no error - just return
      *  - Parallel Token at end of single command - Just ignore last token
      *  - No whitespace between parallel token and command - split into seperate commands 
      */
 
-    cmd_t* parallel_cmds = NULL;
-    size_t num_cmds = 1;
-    size_t cmd_idx = 0;
-    for (size_t i = 0; i < num_tokens; ++i) { 
-        if (strcmp(tokens[i], PARALLEL_TOKEN) == 0) { ++num_cmds; }
-    }
-    parallel_cmds = malloc(num_cmds * sizeof(cmd_t));
-
-    size_t cmd_start_idx = 0;
-    for (size_t i = 0; i < num_tokens; ++i) {
-        // Trigger cmd seperation on parallel token or last token in list 
-        // This will handle strings without parallel tokens and the last parallel
-        // command that doesn't feature the parallel token to trigger its seperation
-        if (strcmp(tokens[i], PARALLEL_TOKEN) == 0 || i == num_tokens - 1) { 
-            parallel_cmds[cmd_idx] = (cmd_t){ malloc((i - cmd_start_idx + 1) * sizeof(char*)), i - cmd_start_idx + 1 };
-            for (size_t j = 0; j < parallel_cmds[cmd_idx].argc; ++j) {
-                parallel_cmds[cmd_idx].argv[j] = tokens[cmd_start_idx + j];
-                tokens[cmd_start_idx + j] = NULL;
-            }
-
-            cmd_start_idx = i + 1;
-            ++cmd_idx;
-        }
-    }
-
-    free(tokens);
-
-    pid_t* child_pids = malloc(num_cmds * sizeof(pid_t));
-    for (size_t i = 0; i < num_cmds; ++i) {
+    pid_t* child_pids = (pid_t*) malloc(num_parallel_cmds * sizeof(pid_t));
+    for (size_t i = 0; i < num_parallel_cmds; ++i) {
         if (!is_incmd(&parallel_cmds[i])) {
             pid_t fork_result = fork();
 
@@ -175,7 +231,10 @@ void handle_line(char* cmdline_buffer) {
         }
     }
 
-    wait(NULL);
+    for (size_t i = 0; i < num_parallel_cmds; ++i) {
+        waitpid(child_pids[i], NULL, 0);
+    }
+
     free(parallel_cmds);
     free(child_pids);
 }
@@ -196,25 +255,20 @@ void handle_excmd(cmd_t* cmd) {
      */
 
     int saved_stdout = dup(fileno(stdout));
-    for (size_t i = 0; i < cmd->argc; ++i) {
-        if (strcmp(cmd->argv[i], REDIRECT_TOKEN) == 0) {
-            FILE* output_file = fopen(cmd->argv[i + 1], "w"); 
-            if (output_file == NULL) {
-                PRINT_ERROR;
-                return;
-            }
-            dup2(fileno(output_file), fileno(stdout));
 
-            cmd->argc = i;
-            char** new_argv = (char**)malloc(cmd->argc * sizeof(char*));
-            for (size_t j = 0; j < cmd->argc; ++j) {
-                new_argv[j] = cmd->argv[j];
-            }
-            free(cmd->argv);
-            cmd->argv = new_argv;
-
-            break;
+    if (cmd->redirect_file != NULL) {
+        FILE* output_file = fopen(cmd->redirect_file, "w"); 
+        if (output_file == NULL) {
+            PRINT_ERROR;
+            return;
         }
+        dup2(fileno(output_file), fileno(stdout));
+    }
+
+    // No command is found - done after redirect to handle case where a redirect might not have a command
+    if (cmd->argc == 0) { 
+        PRINT_ERROR;
+        return;
     }
 
     bool was_found_flag = false;
@@ -265,25 +319,27 @@ void handle_incmd(cmd_t* cmd) {
     
     if (strcmp(cmd->argv[0], PATH_CMD) == 0) {
         // Clean up old memory
-        for (size_t i = 0; i < num_search_paths; ++i) {
-            free(search_paths[i]);
-        }
         free(search_paths); 
 
-        // If no path is specified, then default to bin
-        if (cmd->argc == 1) {
-            num_search_paths = 1;
-            search_paths = malloc(num_search_paths * sizeof(char*));
-            search_paths[0] = "/bin/";
-            return;
-        }
-
-        
         num_search_paths = cmd->argc - 1;
         search_paths = malloc(num_search_paths * sizeof(char*));
         for(size_t i = 1; i < cmd->argc; ++i) {
-            search_paths[i - 1] = cmd->argv[i];
+
+            // Check there exists a forward slash in as the last char in the string
+            // i.e. checking its a valid path
+            if (cmd->argv[i][strlen(cmd->argv[i]) - 1] == '/') {
+                size_t new_path_len = strlen(cmd->argv[i]) + 1;
+                search_paths[i - 1] = (char*) malloc(new_path_len * sizeof(char));
+                strlcpy(search_paths[i - 1], cmd->argv[i], new_path_len);
+            } else {
+                size_t new_path_len = strlen(cmd->argv[i]) + 2;
+                search_paths[i - 1] = (char*) malloc(new_path_len * sizeof(char));
+                strlcpy(search_paths[i - 1], cmd->argv[i], new_path_len);
+                strlcat(search_paths[i - 1], "/", new_path_len + 1);
+            }
+            
         }
+
 
         return;
     }
@@ -305,5 +361,12 @@ void strip_extra_spaces(char* string) {
     }
   }
 
+
   string[x] = '\0';
+
+  size_t end = strlen(string) - 1;
+  while (string[end] == SEPERATOR_CHAR) {
+    --end;
+  }
+  string[end + 1] = '\0';
 }
